@@ -1200,7 +1200,7 @@ static PyObject* md_transform(py_phlex_module* mod, PyObject* args, PyObject* kw
     constexpr size_t N = sizeof...(Is);
 
     auto make_product_selector = [&](size_t i) {
-      const auto& pq = input_selectors[i];
+      auto const& pq = input_selectors[i];
       std::string c = input_converter_name(cname, i);
       std::string suff =
         "py_" + (pq.suffix ? std::string{static_cast<std::string_view>(*pq.suffix)} : "");
@@ -1297,7 +1297,7 @@ static PyObject* md_observe(py_phlex_module* mod, PyObject* args, PyObject* kwds
     constexpr size_t N = sizeof...(Is);
 
     auto make_product_selector = [&](size_t i) {
-      const auto& pq = input_selectors[i];
+      auto const& pq = input_selectors[i];
       std::string c = input_converter_name(cname, i);
       std::string suff =
         "py_" + (pq.suffix ? std::string{static_cast<std::string_view>(*pq.suffix)} : "");

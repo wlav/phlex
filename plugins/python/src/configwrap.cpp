@@ -48,7 +48,8 @@ static PyObject* pcm_get(py_config_map* pcm, PyObject* args)
     return nullptr;
   }
 
-  PyObject* value = Py_TYPE(pcm)->tp_as_mapping->mp_subscript(reinterpret_cast<PyObject*>(pcm), pykey);
+  PyObject* value =
+    Py_TYPE(pcm)->tp_as_mapping->mp_subscript(reinterpret_cast<PyObject*>(pcm), pykey);
   if (!value) {
     PyErr_Clear();
     Py_INCREF(pydefval);
@@ -245,11 +246,12 @@ static PyMappingMethods pcm_as_mapping = {
 
 // PyMethodDef arrays must be non-const; tp_methods in PyTypeObject takes a non-const pointer.
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
-static std::array<PyMethodDef, 2> pcm_methods{{{"get",
-                                                reinterpret_cast<PyCFunction>(pcm_get),
-                                                METH_VARARGS,
-                                                "lookup an entry by name or return the given default"},
-                                                {nullptr, nullptr, 0, nullptr}}};
+static std::array<PyMethodDef, 2> pcm_methods{
+  {{"get",
+    reinterpret_cast<PyCFunction>(pcm_get),
+    METH_VARARGS,
+    "lookup an entry by name or return the given default"},
+   {nullptr, nullptr, 0, nullptr}}};
 
 // clang-format off
 // PyType_Ready() modifies PyTypeObject in-place; the Python C API requires non-const.
