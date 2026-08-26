@@ -455,12 +455,20 @@ namespace {
         PyObject* args = PyObject_GetAttrString(sig, "args");
 
         if (ret && args && PyTuple_CheckExact(args)) {
-          output_types.push_back(annotation_as_text(ret));
-          for (Py_ssize_t i = 0; i < PyTuple_GET_SIZE(args); ++i) {
-            PyObject* item = PyTuple_GET_ITEM(args, i);
-            input_types.push_back(annotation_as_text(item));
+          std::string const& ret_ann = annotation_as_text(ret);
+          if (!ret_ann.empty()) {
+            output_types.push_back(ret_ann);
+            for (Py_ssize_t i = 0; i < PyTuple_GET_SIZE(args); ++i) {
+              PyObject* item = PyTuple_GET_ITEM(args, i);
+              std::string const& inp_ann = annotation_as_text(item);
+              if (inp_ann.empty())
+                break;
+              input_types.push_back(inp_ann);
+            }
+
+            if (static_cast<Py_ssize_t>(input_types.size()) == PyTuple_GET_SIZE(args))
+              conversion_ok = true;
           }
-          conversion_ok = true;
         } else {
           PyErr_Clear();
         }
