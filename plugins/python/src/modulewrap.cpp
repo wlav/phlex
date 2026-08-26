@@ -250,6 +250,7 @@ namespace {
       return std::nullopt;
     }
 
+    // creator is required
     PyObject* pyc = PyDict_GetItemString(pysel, "creator");
     if (!pyc || !PyUnicode_Check(pyc)) {
       PyErr_Format(PyExc_TypeError, "missing \"creator\" or not a string");
@@ -257,13 +258,20 @@ namespace {
     }
     char const* c = PyUnicode_AsUTF8(pyc);
 
+    // layer is optional
+    std::optional<identifier> l;
     PyObject* pyl = PyDict_GetItemString(pysel, "layer");
-    if (!pyl || !PyUnicode_Check(pyl)) {
-      PyErr_Format(PyExc_TypeError, "missing \"layer\" or not a string");
-      return std::nullopt;
+    if (pyl) {
+      if (!PyUnicode_Check(pyl)) {
+        PyErr_Format(PyExc_TypeError, "provided \"layer\" is not a string");
+        return std::nullopt;
+      }
+      l = identifier(PyUnicode_AsUTF8(pyl));
+    } else {
+      PyErr_Clear();
     }
-    char const* l = PyUnicode_AsUTF8(pyl);
 
+    // suffix is optional
     std::optional<identifier> s;
     PyObject* pys = PyDict_GetItemString(pysel, "suffix");
     if (pys) {
@@ -276,8 +284,13 @@ namespace {
       PyErr_Clear();
     }
 
+    // in the following, each of these parameters is passed differently b/c:
+    //   "c" is still a string and needs conversion to an identifier
+    //   "layer" is an internal type that only takes an optional through a
+    //     move for its contructor
+    //   "suffix" is an optional itself, so can pass directly
     return std::optional<product_selector>{
-      product_selector{.creator = identifier(c), .layer = identifier(l), .suffix = s}};
+      product_selector{.creator = identifier(c), .layer = std::move(l), .suffix = s}};
   }
 
   std::vector<product_selector> validate_input(PyObject* input)
@@ -859,13 +872,57 @@ static PyObject* parse_args(PyObject* args,
   // if annotations were correct (and correctly parsed), there should be as many
   // input types as input product selectors
   if (input_types.size() != input_selectors.size()) {
-    PyErr_Format(PyExc_TypeError,
-                 "number of inputs (%d; %s) does not match number of annotation types (%d; %s)",
-                 input_selectors.size(),
-                 stringify(input_selectors).c_str(),
-                 input_types.size(),
-                 stringify(input_types).c_str());
-    return nullptr;
+    // allow fewer selectors than types if there are sufficient optional
+    // parameters on the Python side
+    bool optok = false;
+    if (input_selectors.size() < input_types.size()) {
+      static PyObject* opt_counter = nullptr;
+      if (!opt_counter) {
+        PyObject* phlexmod = PyImport_ImportModule("phlex");
+        if (phlexmod) {
+          opt_counter = PyObject_GetAttrString(phlexmod, "count_optional_arguments");
+          Py_DECREF(phlexmod);
+
+          // LCOV_EXCL_START
+          // this would only fail if the phlex installation were broken and
+          // only exists to get a proper error message instead of a segfault
+          // in that rather unlikely case
+          if (!opt_counter) {
+            PyErr_Clear();
+          }
+          // LCOV_EXCL_STOPT
+        }
+      }
+
+      if (opt_counter) {
+        PyObject* optcnt = PyObject_CallOneArg(opt_counter, callable);
+        if (optcnt) {
+          long l = PyLong_AsLong(optcnt);
+          if (l != (long)-1) {
+            if ((l + input_selectors.size()) >= input_types.size())
+              optok = true;
+          } else {
+            Py_DECREF(optcnt);
+            PyErr_Clear();
+          }
+        }
+        // LCOV_EXCL_START
+        else {
+          PyErr_Clear(); // count_optional_arguments doesn't raise
+        }
+        // LCOV_EXCL_STOP
+      }
+    }
+
+    if (!optok) {
+      PyErr_Format(PyExc_TypeError,
+                   "number of inputs (%d; %s) does not match number of annotation types (%d; %s)",
+                   input_selectors.size(),
+                   stringify(input_selectors).c_str(),
+                   input_types.size(),
+                   stringify(input_types).c_str());
+      return nullptr;
+    }
   }
 
   // special case of Phlex Variant wrapper
@@ -1077,15 +1134,21 @@ static PyObject* md_transform(py_phlex_module* mod, PyObject* args, PyObject* kw
     return nullptr;
   }
 
-  // TODO: it's not clear what the output layer will be if the input layers are not
-  // all the same, so for now, simply raise an error if their is any ambiguity
-  auto output_layer = static_cast<identifier>(input_selectors[0].layer);
-  if (1 < input_selectors.size()) {
-    for (auto const& iq_pq : input_selectors | std::views::drop(1)) {
-      if (static_cast<identifier>(iq_pq.layer) != output_layer) {
-        PyErr_Format(PyExc_ValueError, "transform %s output layer is ambiguous", cname.c_str());
-        Py_DECREF(callable);
-        return nullptr;
+  // if a layer was provided, we'll re-use it for the intermediate Python products,
+  // otherwise also specify no layer for the intermediates (TODO: it may be worthwhile
+  // to explore using a "workspace" layer)
+  std::optional<identifier> output_layer;
+  if (input_selectors[0].layer) {
+    output_layer = static_cast<identifier>(input_selectors[0].layer);
+    // TODO: it's not clear what the output layer will be if the input layers are not
+    // all the same, so for now, simply raise an error if their is any ambiguity
+    if (1 < input_selectors.size()) {
+      for (auto const& iq_pq : input_selectors | std::views::drop(1)) {
+        if (static_cast<identifier>(iq_pq.layer) != output_layer.value()) {
+          PyErr_Format(PyExc_ValueError, "transform %s output layer is ambiguous", cname.c_str());
+          Py_DECREF(callable);
+          return nullptr;
+        }
       }
     }
   }
@@ -1137,13 +1200,16 @@ static PyObject* md_transform(py_phlex_module* mod, PyObject* args, PyObject* kw
     constexpr size_t N = sizeof...(Is);
 
     auto make_product_selector = [&](size_t i) {
-      auto pq = input_selectors[i];
+      const auto& pq = input_selectors[i];
       std::string c = input_converter_name(cname, i);
       std::string suff =
         "py_" + (pq.suffix ? std::string{static_cast<std::string_view>(*pq.suffix)} : "");
 
+      // make a copy of "layer" so we can move it without involving a temporary
+      // identifier (which will fail, if no layer was specified)
+      auto l = pq.layer;
       return product_selector{
-        .creator = identifier(c), .layer = pq.layer, .suffix = identifier(suff)};
+        .creator = identifier(c), .layer = std::move(l), .suffix = identifier(suff)};
     };
 
     auto insert_tranform_for_callback = [&](auto& cb) {
@@ -1169,7 +1235,7 @@ static PyObject* md_transform(py_phlex_module* mod, PyObject* args, PyObject* kw
 
   // insert output converter node into the graph
   auto out_pq = product_selector{.creator = identifier(pyname),
-                                 .layer = identifier(output_layer),
+                                 .layer = std::move(output_layer), // okay if no value
                                  .suffix = identifier(pyoutput)};
   std::string const& output = output_suffixes[0];
   if (!insert_output_converter(mod, cname, out_pq, out_type, output, !ccallf, nconcur)) {
@@ -1231,13 +1297,16 @@ static PyObject* md_observe(py_phlex_module* mod, PyObject* args, PyObject* kwds
     constexpr size_t N = sizeof...(Is);
 
     auto make_product_selector = [&](size_t i) {
-      auto pq = input_selectors[i];
+      const auto& pq = input_selectors[i];
       std::string c = input_converter_name(cname, i);
       std::string suff =
         "py_" + (pq.suffix ? std::string{static_cast<std::string_view>(*pq.suffix)} : "");
 
+      // make a copy of "layer" so we can move it without involving a temporary
+      // identifier (which will fail, if no layer was specified)
+      auto l = pq.layer;
       return product_selector{
-        .creator = identifier(c), .layer = pq.layer, .suffix = identifier(suff)};
+        .creator = identifier(c), .layer = std::move(l), .suffix = identifier(suff)};
     };
 
     auto insert_observe_for_callback = [&](auto& cb) {

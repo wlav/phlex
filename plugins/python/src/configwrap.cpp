@@ -39,6 +39,25 @@ static py_config_map* pcm_new(PyTypeObject* subtype, PyObject*, PyObject*)
   return pcm;
 }
 
+static PyObject* pcm_get(py_config_map* pcm, PyObject* args)
+{
+  PyObject* pykey = nullptr;
+  PyObject* pydefval = nullptr;
+  if (!PyArg_ParseTuple(args, "OO", &pykey, &pydefval)) {
+    // error already set by argument parser
+    return nullptr;
+  }
+
+  PyObject* value = Py_TYPE(pcm)->tp_as_mapping->mp_subscript(reinterpret_cast<PyObject*>(pcm), pykey);
+  if (!value) {
+    PyErr_Clear();
+    Py_INCREF(pydefval);
+    return pydefval;
+  }
+
+  return value;
+}
+
 static void pcm_dealloc(py_config_map* pcm)
 {
   Py_DECREF(pcm->ph_config_cache);
@@ -224,6 +243,14 @@ static PyObject* pcm_subscript(py_config_map* pycmap, PyObject* pykey)
 static PyMappingMethods pcm_as_mapping = {
   nullptr, reinterpret_cast<binaryfunc>(pcm_subscript), nullptr};
 
+// PyMethodDef arrays must be non-const; tp_methods in PyTypeObject takes a non-const pointer.
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+static std::array<PyMethodDef, 2> pcm_methods{{{"get",
+                                                reinterpret_cast<PyCFunction>(pcm_get),
+                                                METH_VARARGS,
+                                                "lookup an entry by name or return the given default"},
+                                                {nullptr, nullptr, 0, nullptr}}};
+
 // clang-format off
 // PyType_Ready() modifies PyTypeObject in-place; the Python C API requires non-const.
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
@@ -255,7 +282,7 @@ PyTypeObject phlex::experimental::PhlexConfig_Type = {
   0,                                                 // tp_weaklistoffset
   nullptr,                                           // tp_iter
   nullptr,                                           // tp_iternext
-  nullptr,                                           // tp_methods
+  pcm_methods.data(),                                // tp_methods
   nullptr,                                           // tp_members
   nullptr,                                           // tp_getset
   nullptr,                                           // tp_base
