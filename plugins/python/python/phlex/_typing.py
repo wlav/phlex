@@ -249,7 +249,6 @@ def count_optional_arguments(pycall: Callable[..., Any]) -> int:
     Returns:
         Number of optional arguments.
     """
-
     try:
         pycall = pycall.phlex_callable
     except AttributeError:
